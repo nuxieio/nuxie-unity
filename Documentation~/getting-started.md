@@ -1,110 +1,96 @@
-# Getting Started
+# Getting started
 
-## 1. Add the Package
+## 1. Install dependencies
 
-Add to `Packages/manifest.json`:
+Install this Unity package and the External Dependency Manager for Unity. The checked-in
+`Editor/NuxieDependencies.xml` resolves Nuxie iOS 0.1.0 and
+`ai.nuxie:nuxie-android:0.1.0`.
 
-```json
-{
-  "dependencies": {
-    "com.nuxie.unity": "https://github.com/nuxieai/nuxie-unity.git#main"
-  }
-}
-```
+See [native dependencies](native-dependencies.md) for export requirements and native
+permission declarations.
 
-## 2. Wire Native Dependencies
-
-Before building for device, make sure platform projects include native Nuxie SDK dependencies.
-
-- iOS: include `nuxie-ios` (for `import Nuxie` in Swift bridge).
-- Android: include `nuxie-android` dependency (for `io.nuxie.sdk.*` in Kotlin bridge).
-
-See [Native Dependencies](native-dependencies.md) for details.
-
-If authored flows use native permission actions, also add the matching iOS
-usage-description keys and Android dangerous permissions in your generated
-platform projects.
-
-## 3. Configure Nuxie Once
-
-Create a bootstrap component:
+## 2. Configure once
 
 ```csharp
-using System.Collections.Generic;
-using Nuxie.Unity;
-using UnityEngine;
-
-public sealed class NuxieBootstrap : MonoBehaviour
+var sdk = await Nuxie.ConfigureAsync(new NuxieConfig("NX_REPLACE_ME")
 {
-  [SerializeField] private string apiKey = "NX_REPLACE_ME";
+  Environment = NuxieEnvironment.Production,
+  LogLevel = NuxieLogLevel.Warning,
+  LocaleIdentifier = "en-US",
+});
+```
 
-  private async void Start()
+Configuration contains only customer-owned choices. Endpoint, retry, cache, storage,
+delivery, and runtime lifecycle behavior stay inside the native SDK.
+
+## 3. Identify
+
+```csharp
+await sdk.IdentifyAsync(
+  "player_123",
+  userProperties: new Dictionary<string, object?> { ["plan"] = "pro" },
+  userPropertiesSetOnce: new Dictionary<string, object?> { ["source"] = "unity" }
+);
+```
+
+`ResetAsync()` creates a new anonymous identity by default. Pass
+`keepAnonymousId: true` only when the product explicitly needs it.
+
+## 4. Trigger Journeys
+
+```csharp
+sdk.Trigger(
+  "level_completed",
+  new Dictionary<string, object?>
   {
-    var sdk = await Nuxie.ConfigureAsync(new NuxieConfig(apiKey)
-    {
-      Environment = NuxieEnvironment.Production,
-      LogLevel = NuxieLogLevel.Info,
-      FlushAt = 20,
-      FlushIntervalSeconds = 30,
-    });
-
-    await sdk.IdentifyAsync(
-      "player_123",
-      userProperties: new Dictionary<string, object?>
-      {
-        ["platform"] = "unity",
-        ["build"] = Application.version,
-      }
-    );
+    ["level"] = 12,
+    ["score"] = 9850,
   }
-}
+);
 ```
 
-## 4. Trigger and Observe Updates
+`Trigger` is an event-only, fire-and-forget call. A matching Journey is selected and
+run by native code. There is no wrapper trigger result or cancellation handle.
+
+## 5. Receive typed host events
 
 ```csharp
-var operation = Nuxie.Instance.Trigger("paywall_trigger");
-var subscription = operation.OnUpdate(update => Debug.Log($"update={update.Kind}"));
-
-var terminal = await operation.Done;
-Debug.Log($"terminal={terminal.Kind}");
-
-subscription.Dispose();
+sdk.OnActivity += activity => Debug.Log(activity.Name);
+sdk.OnAppAction += action => HandleAppAction(action);
+sdk.OnFeatureAccessChanged += change => RenderFeatureAccess(change.To);
 ```
 
-## 5. Feature and Profile APIs
+`NuxieActivityInfo` preserves scalar activity properties. `AppAction` includes an
+`ExperienceRef` with the originating Experience and optional Journey.
+
+## 6. Read and use Features
 
 ```csharp
-var profile = await Nuxie.Instance.RefreshProfileAsync();
-var access = await Nuxie.Instance.HasFeatureAsync("premium");
+var access = await sdk.HasFeatureAsync(
+  "credits",
+  requiredBalance: 2.5,
+  policy: FeatureCheckPolicy.CacheFirst
+);
 
-if (access.Allowed)
-{
-  await Nuxie.Instance.UseFeatureAsync("credits", amount: 1);
-}
+sdk.UseFeature("credits", amount: 1);
+var result = await sdk.UseFeatureAndWaitAsync("credits", amount: 1);
 ```
 
-## 6. Optional Purchase Controller
+Use `FeatureCheckPolicy.Remote` when the caller explicitly needs a current server
+answer. `UseFeatureAndWaitAsync` includes the authoritative access snapshot when
+available.
 
-If flows request purchase/restore actions, pass an `INuxiePurchaseController` when configuring:
+## 7. Dismiss and localize
 
 ```csharp
-var sdk = await Nuxie.ConfigureAsync(new NuxieConfig(apiKey), new MyPurchaseController());
+await sdk.DismissAsync();
+await sdk.SetLocaleIdentifierAsync("fr-CA");
 ```
 
-See the sample and API reference for request/result models.
+Passing `null` to `SetLocaleIdentifierAsync` restores native locale selection.
 
-## 7. Native permission actions
+## 8. Shut down
 
-No extra Unity-side API is needed for:
-
-- `request_notifications`
-- `request_tracking`
-- `request_permission("camera" | "microphone" | "photos" | "location")`
-
-Those actions execute in the native SDKs, but the host platform projects still
-need:
-
-- iOS: the matching `Info.plist` usage-description keys
-- Android: manifest declarations for camera, microphone, photo-library, or
-  location permissions used by your flows
+```csharp
+await sdk.ShutdownAsync();
+```

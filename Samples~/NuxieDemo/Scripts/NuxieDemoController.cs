@@ -9,12 +9,10 @@ public sealed class NuxieDemoController : MonoBehaviour, INuxiePurchaseControlle
 {
   [SerializeField] private string apiKey = "NX_REPLACE_ME";
   [SerializeField] private string distinctId = "unity-demo-user";
-  [SerializeField] private string triggerEventName = "paywall_trigger";
-  [SerializeField] private string flowId = "";
+  [SerializeField] private string triggerEventName = "upgrade_tapped";
+  [SerializeField] private string featureId = "premium";
 
   private Nuxie? _sdk;
-  private NuxieTriggerOperation? _triggerOperation;
-  private IDisposable? _triggerSubscription;
 
   private async void Start()
   {
@@ -23,8 +21,14 @@ public sealed class NuxieDemoController : MonoBehaviour, INuxiePurchaseControlle
 
   private void OnDestroy()
   {
-    _triggerSubscription?.Dispose();
-    _triggerSubscription = null;
+    if (_sdk is null)
+    {
+      return;
+    }
+
+    _sdk.OnFeatureAccessChanged -= OnFeatureAccessChanged;
+    _sdk.OnActivity -= OnActivity;
+    _sdk.OnAppAction -= OnAppAction;
   }
 
   [ContextMenu("Initialize Nuxie")]
@@ -35,36 +39,29 @@ public sealed class NuxieDemoController : MonoBehaviour, INuxiePurchaseControlle
       return;
     }
 
-    if (string.IsNullOrWhiteSpace(apiKey))
-    {
-      Debug.LogError("Nuxie API key is required.");
-      return;
-    }
-
     try
     {
-      _sdk = await Nuxie.ConfigureAsync(new NuxieConfig(apiKey)
-      {
-        Environment = NuxieEnvironment.Production,
-        LogLevel = NuxieLogLevel.Info,
-        FlushAt = 20,
-        FlushIntervalSeconds = 30,
-      }, this);
-
+      _sdk = await Nuxie.ConfigureAsync(
+        new NuxieConfig(apiKey)
+        {
+          Environment = NuxieEnvironment.Production,
+          LogLevel = NuxieLogLevel.Info,
+          PurchaseHandlingMode = PurchaseHandlingMode.Observer,
+        },
+        this
+      );
       _sdk.OnFeatureAccessChanged += OnFeatureAccessChanged;
-      _sdk.OnFlowLifecycle += OnFlowLifecycle;
-      _sdk.OnPurchaseRequest += OnPurchaseRequest;
-      _sdk.OnRestoreRequest += OnRestoreRequest;
+      _sdk.OnActivity += OnActivity;
+      _sdk.OnAppAction += OnAppAction;
 
       await _sdk.IdentifyAsync(
         distinctId,
         userProperties: new Dictionary<string, object?>
         {
           ["platform"] = "unity",
-          ["appVersion"] = Application.version,
+          ["app_version"] = Application.version,
         }
       );
-
       Debug.Log("Nuxie initialized.");
     }
     catch (Exception error)
@@ -74,7 +71,7 @@ public sealed class NuxieDemoController : MonoBehaviour, INuxiePurchaseControlle
   }
 
   [ContextMenu("Trigger Event")]
-  public async Task TriggerEventAsync()
+  public void TriggerEvent()
   {
     if (_sdk is null)
     {
@@ -82,55 +79,18 @@ public sealed class NuxieDemoController : MonoBehaviour, INuxiePurchaseControlle
       return;
     }
 
-    _triggerSubscription?.Dispose();
-    _triggerOperation = _sdk.Trigger(
+    _sdk.Trigger(
       triggerEventName,
-      new TriggerOptions
+      new Dictionary<string, object?>
       {
-        Properties = new Dictionary<string, object?>
-        {
-          ["screen"] = "sample",
-          ["time"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        },
+        ["screen"] = "sample",
+        ["timestamp_ms"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
       }
     );
-
-    _triggerSubscription = _triggerOperation.OnUpdate(update =>
-      Debug.Log($"[Nuxie] Trigger update: {update.Kind}"));
-
-    try
-    {
-      var terminal = await _triggerOperation.Done;
-      Debug.Log($"[Nuxie] Trigger terminal: {terminal.Kind}");
-    }
-    catch (Exception error)
-    {
-      Debug.LogException(error);
-    }
   }
 
-  [ContextMenu("Show Flow")]
-  public async Task ShowFlowAsync()
-  {
-    if (_sdk is null || string.IsNullOrWhiteSpace(flowId))
-    {
-      Debug.LogWarning("Set flowId and initialize Nuxie first.");
-      return;
-    }
-
-    try
-    {
-      await _sdk.ShowFlowAsync(flowId);
-      Debug.Log($"[Nuxie] Show flow requested: {flowId}");
-    }
-    catch (Exception error)
-    {
-      Debug.LogException(error);
-    }
-  }
-
-  [ContextMenu("Refresh Profile")]
-  public async Task RefreshProfileAsync()
+  [ContextMenu("Read Feature Access")]
+  public async Task ReadFeatureAccessAsync()
   {
     if (_sdk is null)
     {
@@ -139,12 +99,25 @@ public sealed class NuxieDemoController : MonoBehaviour, INuxiePurchaseControlle
 
     try
     {
-      var profile = await _sdk.RefreshProfileAsync();
-      Debug.Log($"[Nuxie] Profile refreshed. customerId={profile.CustomerId}");
+      var access = await _sdk.HasFeatureAsync(
+        featureId,
+        requiredBalance: 1,
+        policy: FeatureCheckPolicy.Remote
+      );
+      Debug.Log($"[Nuxie] Feature {featureId}: allowed={access.Allowed}");
     }
     catch (Exception error)
     {
       Debug.LogException(error);
+    }
+  }
+
+  [ContextMenu("Dismiss Experience")]
+  public async Task DismissAsync()
+  {
+    if (_sdk is not null)
+    {
+      await _sdk.DismissAsync();
     }
   }
 
@@ -156,21 +129,14 @@ public sealed class NuxieDemoController : MonoBehaviour, INuxiePurchaseControlle
       return;
     }
 
-    try
-    {
-      await _sdk.ShutdownAsync();
-      _sdk = null;
-      Debug.Log("Nuxie shutdown complete.");
-    }
-    catch (Exception error)
-    {
-      Debug.LogException(error);
-    }
+    await _sdk.ShutdownAsync();
+    _sdk = null;
+    Debug.Log("Nuxie shutdown complete.");
   }
 
   public Task<PurchaseResult> OnPurchaseAsync(PurchaseRequest request)
   {
-    Debug.Log($"[Nuxie] Purchase request: {request.ProductId} ({request.Platform})");
+    Debug.Log($"[Nuxie] Purchase request: {request.StoreProductId} ({request.Platform})");
     return Task.FromResult(PurchaseResult.Failed("purchase_not_implemented"));
   }
 
@@ -180,23 +146,18 @@ public sealed class NuxieDemoController : MonoBehaviour, INuxiePurchaseControlle
     return Task.FromResult(RestoreResult.NoPurchases());
   }
 
-  private void OnFeatureAccessChanged(FeatureAccessChangedEvent payload)
+  private void OnFeatureAccessChanged(FeatureAccessChangedEvent change)
   {
-    Debug.Log($"[Nuxie] Feature changed: {payload.FeatureId} allowed={payload.To.Allowed}");
+    Debug.Log($"[Nuxie] Feature changed: {change.FeatureId} allowed={change.To.Allowed}");
   }
 
-  private void OnFlowLifecycle(FlowLifecycleEvent payload)
+  private void OnActivity(NuxieActivityInfo activity)
   {
-    Debug.Log($"[Nuxie] Flow lifecycle: {payload.Type} flowId={payload.FlowId}");
+    Debug.Log($"[Nuxie] Activity: {activity.Name}");
   }
 
-  private void OnPurchaseRequest(PurchaseRequest payload)
+  private void OnAppAction(AppAction action)
   {
-    Debug.Log($"[Nuxie] Purchase callback for {payload.ProductId}");
-  }
-
-  private void OnRestoreRequest(RestoreRequest payload)
-  {
-    Debug.Log("[Nuxie] Restore callback received");
+    Debug.Log($"[Nuxie] App action: {action.Name} from {action.Experience.ExperienceId}");
   }
 }

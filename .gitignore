@@ -2,15 +2,12 @@
 *.user
 *.csproj
 *.sln
+!dotnet/Nuxie.Unity.Core.Tests/Nuxie.Unity.Core.Tests.csproj
 Library/
 Temp/
 Obj/
 Logs/
 Build/
-
-# .NET test artifacts
-dotnet/**/bin/
-dotnet/**/obj/
 
 # .NET test artifacts
 dotnet/**/bin/

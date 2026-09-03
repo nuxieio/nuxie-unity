@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -10,19 +9,14 @@ namespace Nuxie.Unity;
 public sealed class Nuxie
 {
   private const string WrapperVersionValue = "0.1.0";
+  private static readonly TimeSpan PurchaseTimeout = TimeSpan.FromSeconds(60);
   private static readonly object InstanceGate = new();
-  private static long _requestCounter;
   private static Nuxie? _instance;
   private static Func<INuxieNativeBridge> _bridgeFactory = static () => new UnityNativeBridge();
 
   private readonly INuxieNativeBridge _bridge;
-  private readonly ConcurrentDictionary<string, TriggerOperationState> _triggerOperations = new(StringComparer.Ordinal);
-  private readonly SemaphoreSlim _purchaseControllerLock = new(1, 1);
-
   private bool _isConfigured;
   private INuxiePurchaseController? _purchaseController;
-  private int _purchaseTimeoutSeconds = 60;
-  private int _restoreTimeoutSeconds = 60;
 
   private Nuxie(INuxieNativeBridge bridge)
   {
@@ -37,7 +31,7 @@ public sealed class Nuxie
       var instance = _instance;
       if (instance is null || !instance._isConfigured)
       {
-        throw new NuxieException("NOT_CONFIGURED", "Nuxie.ConfigureAsync must be called before Nuxie.Instance.");
+        throw new NuxieException("NOT_CONFIGURED", "Nuxie.ConfigureAsync must complete before Nuxie.Instance is used.");
       }
 
       return instance;
@@ -45,16 +39,18 @@ public sealed class Nuxie
   }
 
   public bool IsConfigured => _isConfigured;
-
   public string WrapperVersion => WrapperVersionValue;
 
-  public event Action<TriggerUpdateEvent>? OnTriggerUpdate;
   public event Action<FeatureAccessChangedEvent>? OnFeatureAccessChanged;
+  public event Action<NuxieActivityInfo>? OnActivity;
+  public event Action<AppAction>? OnAppAction;
   public event Action<PurchaseRequest>? OnPurchaseRequest;
   public event Action<RestoreRequest>? OnRestoreRequest;
-  public event Action<FlowLifecycleEvent>? OnFlowLifecycle;
 
-  public static async Task<Nuxie> ConfigureAsync(NuxieConfig config, INuxiePurchaseController? purchaseController = null)
+  public static async Task<Nuxie> ConfigureAsync(
+    NuxieConfig config,
+    INuxiePurchaseController? purchaseController = null
+  )
   {
     if (config is null)
     {
@@ -74,13 +70,10 @@ public sealed class Nuxie
 
     if (instance._isConfigured)
     {
-      instance._purchaseController = purchaseController;
-      return instance;
+      throw new NuxieException("ALREADY_CONFIGURED", "Nuxie is already configured.");
     }
 
     instance._purchaseController = purchaseController;
-    instance._purchaseTimeoutSeconds = config.PurchaseRequestTimeoutSeconds;
-    instance._restoreTimeoutSeconds = config.RestoreRequestTimeoutSeconds;
 
     try
     {
@@ -98,31 +91,24 @@ public sealed class Nuxie
     {
       throw;
     }
-    catch (Exception ex)
+    catch (Exception error)
     {
-      throw new NuxieException("INVALID_CONFIGURATION", ex.Message, inner: ex);
+      throw new NuxieException("INVALID_CONFIGURATION", error.Message, inner: error);
     }
   }
 
   public async Task ShutdownAsync()
   {
     EnsureConfigured();
-
-    foreach (var (requestId, state) in _triggerOperations)
-    {
-      var cancelled = TriggerUpdate.ErrorUpdate(
-        new TriggerError { Code = "trigger_cancelled", Message = "Trigger cancelled during shutdown." });
-      state.Emit(cancelled);
-      state.TryComplete(cancelled);
-      _triggerOperations.TryRemove(requestId, out _);
-    }
-
     await _bridge.ShutdownAsync(CancellationToken.None);
     _isConfigured = false;
     _purchaseController = null;
     lock (InstanceGate)
     {
-      _instance = null;
+      if (ReferenceEquals(_instance, this))
+      {
+        _instance = null;
+      }
     }
   }
 
@@ -136,7 +122,7 @@ public sealed class Nuxie
     return _bridge.IdentifyAsync(distinctId, userProperties, userPropertiesSetOnce, CancellationToken.None);
   }
 
-  public Task ResetAsync(bool keepAnonymousId = true)
+  public Task ResetAsync(bool keepAnonymousId = false)
   {
     EnsureConfigured();
     return _bridge.ResetAsync(keepAnonymousId, CancellationToken.None);
@@ -160,81 +146,43 @@ public sealed class Nuxie
     return _bridge.GetIsIdentifiedAsync(CancellationToken.None);
   }
 
-  public NuxieTriggerOperation Trigger(string eventName, TriggerOptions? options = null)
+  /// <summary>Captures an event. Any matching Journey runs asynchronously in the native SDK.</summary>
+  public void Trigger(string eventName, IReadOnlyDictionary<string, object?>? properties = null)
   {
     EnsureConfigured();
-    var requestId = $"trigger-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Interlocked.Increment(ref _requestCounter)}";
-    var state = new TriggerOperationState();
-    _triggerOperations[requestId] = state;
-
-    _ = StartTriggerAsync(requestId, eventName, options, state);
-    return new NuxieTriggerOperation(requestId, state, () => CancelTriggerAsync(requestId));
+    _bridge.Trigger(eventName, properties);
   }
 
-  public async Task<TriggerTerminalUpdate> TriggerOnceAsync(
-    string eventName,
-    TriggerOptions? options = null,
-    TimeSpan? timeout = null
+  public Task DismissAsync()
+  {
+    EnsureConfigured();
+    return _bridge.DismissAsync(CancellationToken.None);
+  }
+
+  public Task SetLocaleIdentifierAsync(string? localeIdentifier)
+  {
+    EnsureConfigured();
+    return _bridge.SetLocaleIdentifierAsync(localeIdentifier, CancellationToken.None);
+  }
+
+  public Task<FeatureAccess> HasFeatureAsync(
+    string featureId,
+    double requiredBalance = 1,
+    string? entityId = null,
+    FeatureCheckPolicy policy = FeatureCheckPolicy.CacheFirst
   )
   {
-    var operation = Trigger(eventName, options);
-    if (timeout is null)
-    {
-      return await operation.Done;
-    }
-
-    using var timeoutCts = new CancellationTokenSource(timeout.Value);
-    var completed = await Task.WhenAny(operation.Done, WaitForTimeoutAsync(timeoutCts.Token));
-    if (completed == operation.Done)
-    {
-      return await operation.Done;
-    }
-
-    await operation.CancelAsync();
-    return TriggerTerminalUpdate.From(TriggerUpdate.ErrorUpdate(new TriggerError
-    {
-      Code = "trigger_timeout",
-      Message = "Trigger operation timed out.",
-    }));
-  }
-
-  public Task ShowFlowAsync(string flowId)
-  {
     EnsureConfigured();
-    return _bridge.ShowFlowAsync(flowId, CancellationToken.None);
+    return _bridge.HasFeatureAsync(
+      featureId,
+      requiredBalance,
+      entityId,
+      policy,
+      CancellationToken.None
+    );
   }
 
-  public Task<ProfileResponse> RefreshProfileAsync()
-  {
-    EnsureConfigured();
-    return _bridge.RefreshProfileAsync(CancellationToken.None);
-  }
-
-  public Task<FeatureAccess> HasFeatureAsync(string featureId, int? requiredBalance = null, string? entityId = null)
-  {
-    EnsureConfigured();
-    return _bridge.HasFeatureAsync(featureId, requiredBalance, entityId, CancellationToken.None);
-  }
-
-  public Task<FeatureAccess?> GetCachedFeatureAsync(string featureId, string? entityId = null)
-  {
-    EnsureConfigured();
-    return _bridge.GetCachedFeatureAsync(featureId, entityId, CancellationToken.None);
-  }
-
-  public Task<FeatureCheckResult> CheckFeatureAsync(string featureId, int? requiredBalance = null, string? entityId = null)
-  {
-    EnsureConfigured();
-    return _bridge.CheckFeatureAsync(featureId, requiredBalance, entityId, CancellationToken.None);
-  }
-
-  public Task<FeatureCheckResult> RefreshFeatureAsync(string featureId, int? requiredBalance = null, string? entityId = null)
-  {
-    EnsureConfigured();
-    return _bridge.RefreshFeatureAsync(featureId, requiredBalance, entityId, CancellationToken.None);
-  }
-
-  public Task UseFeatureAsync(
+  public void UseFeature(
     string featureId,
     double amount = 1,
     string? entityId = null,
@@ -242,7 +190,7 @@ public sealed class Nuxie
   )
   {
     EnsureConfigured();
-    return _bridge.UseFeatureAsync(featureId, amount, entityId, metadata, CancellationToken.None);
+    _bridge.UseFeature(featureId, amount, entityId, metadata);
   }
 
   public Task<FeatureUsageResult> UseFeatureAndWaitAsync(
@@ -264,30 +212,6 @@ public sealed class Nuxie
     );
   }
 
-  public Task<bool> FlushEventsAsync()
-  {
-    EnsureConfigured();
-    return _bridge.FlushEventsAsync(CancellationToken.None);
-  }
-
-  public Task<int> GetQueuedEventCountAsync()
-  {
-    EnsureConfigured();
-    return _bridge.GetQueuedEventCountAsync(CancellationToken.None);
-  }
-
-  public Task PauseEventQueueAsync()
-  {
-    EnsureConfigured();
-    return _bridge.PauseEventQueueAsync(CancellationToken.None);
-  }
-
-  public Task ResumeEventQueueAsync()
-  {
-    EnsureConfigured();
-    return _bridge.ResumeEventQueueAsync(CancellationToken.None);
-  }
-
   internal static void SetBridgeFactoryForTests(Func<INuxieNativeBridge> bridgeFactory)
   {
     _bridgeFactory = bridgeFactory ?? throw new ArgumentNullException(nameof(bridgeFactory));
@@ -299,220 +223,92 @@ public sealed class Nuxie
     {
       _instance = null;
       _bridgeFactory = static () => new UnityNativeBridge();
-      Interlocked.Exchange(ref _requestCounter, 0);
     }
-  }
-
-  private async Task StartTriggerAsync(string requestId, string eventName, TriggerOptions? options, TriggerOperationState state)
-  {
-    try
-    {
-      await _bridge.StartTriggerAsync(requestId, eventName, options, CancellationToken.None);
-    }
-    catch (Exception ex)
-    {
-      var update = TriggerUpdate.ErrorUpdate(new TriggerError
-      {
-        Code = "trigger_start_failed",
-        Message = ex.Message,
-      });
-      state.Emit(update);
-      state.TryComplete(update);
-      _triggerOperations.TryRemove(requestId, out _);
-    }
-  }
-
-  private async Task CancelTriggerAsync(string requestId)
-  {
-    if (!_triggerOperations.TryRemove(requestId, out var state))
-    {
-      return;
-    }
-
-    try
-    {
-      await _bridge.CancelTriggerAsync(requestId, CancellationToken.None);
-    }
-    catch
-    {
-      // Ignore native cancel failures to keep cancellation deterministic.
-    }
-
-    var cancelled = TriggerUpdate.ErrorUpdate(new TriggerError
-    {
-      Code = "trigger_cancelled",
-      Message = "Trigger operation was cancelled.",
-    });
-    state.Emit(cancelled);
-    state.TryComplete(cancelled);
   }
 
   private async void OnNativeEventReceived(NativeEventEnvelope envelope)
   {
     switch (envelope.Type)
     {
-      case NativeEventType.TriggerUpdate:
-        HandleTriggerUpdate(envelope);
-        break;
       case NativeEventType.FeatureAccessChanged:
         OnFeatureAccessChanged?.Invoke(NativePayloadMapper.ParseFeatureAccessChanged(envelope));
-        break;
+        return;
+      case NativeEventType.Activity:
+        OnActivity?.Invoke(NativePayloadMapper.ParseActivity(envelope.Payload));
+        return;
+      case NativeEventType.AppAction:
+        OnAppAction?.Invoke(NativePayloadMapper.ParseAppAction(envelope.Payload));
+        return;
       case NativeEventType.PurchaseRequest:
         await HandlePurchaseRequestAsync(envelope);
-        break;
+        return;
       case NativeEventType.RestoreRequest:
         await HandleRestoreRequestAsync(envelope);
-        break;
-      case NativeEventType.FlowPresented:
-      case NativeEventType.FlowDismissed:
-        OnFlowLifecycle?.Invoke(NativePayloadMapper.ParseFlowLifecycleEvent(envelope));
-        break;
+        return;
       case NativeEventType.Unknown:
       default:
-        break;
-    }
-  }
-
-  private void HandleTriggerUpdate(NativeEventEnvelope envelope)
-  {
-    var requestId = envelope.RequestId ?? "";
-    var update = NativePayloadMapper.ParseTriggerUpdate(envelope.Payload);
-    var terminalFromNative = NativePayloadMapper.TryGetNativeTerminalFlag(envelope.Payload, out var nativeTerminal) && nativeTerminal;
-    var terminal = terminalFromNative || update.IsTerminal;
-
-    var updateEvent = new TriggerUpdateEvent
-    {
-      RequestId = requestId,
-      Update = update,
-      IsTerminal = terminal,
-      TimestampMs = envelope.TimestampMs,
-    };
-    OnTriggerUpdate?.Invoke(updateEvent);
-
-    if (!_triggerOperations.TryGetValue(requestId, out var state))
-    {
-      return;
-    }
-
-    state.Emit(update);
-    if (terminal)
-    {
-      state.TryComplete(update);
-      _triggerOperations.TryRemove(requestId, out _);
+        return;
     }
   }
 
   private async Task HandlePurchaseRequestAsync(NativeEventEnvelope envelope)
   {
-    var request = NativePayloadMapper.ParsePurchaseRequest(envelope);
+    var request = NativePayloadMapper.ParsePurchaseRequest(envelope.Payload);
     OnPurchaseRequest?.Invoke(request);
 
-    await _purchaseControllerLock.WaitAsync();
-    try
+    PurchaseResult result;
+    if (_purchaseController is null)
     {
-      PurchaseResult result;
-      if (_purchaseController is null)
-      {
-        result = PurchaseResult.Failed("purchase_delegate_not_configured");
-      }
-      else
-      {
-        result = await ResolvePurchaseResultWithTimeoutAsync(request);
-      }
+      result = PurchaseResult.Failed("purchase_delegate_not_configured");
+    }
+    else
+    {
+      result = await ResolveWithTimeoutAsync(
+        _purchaseController.OnPurchaseAsync(request),
+        PurchaseResult.Failed("purchase_timeout"),
+        error => PurchaseResult.Failed(error.Message)
+      );
+    }
 
-      await _bridge.CompletePurchaseAsync(request.RequestId, result, CancellationToken.None);
-    }
-    finally
-    {
-      _purchaseControllerLock.Release();
-    }
+    await _bridge.CompletePurchaseAsync(request.RequestId, result, CancellationToken.None);
   }
 
   private async Task HandleRestoreRequestAsync(NativeEventEnvelope envelope)
   {
-    var request = NativePayloadMapper.ParseRestoreRequest(envelope);
+    var request = NativePayloadMapper.ParseRestoreRequest(envelope.Payload);
     OnRestoreRequest?.Invoke(request);
 
-    await _purchaseControllerLock.WaitAsync();
-    try
+    RestoreResult result;
+    if (_purchaseController is null)
     {
-      RestoreResult result;
-      if (_purchaseController is null)
-      {
-        result = RestoreResult.Failed("purchase_delegate_not_configured");
-      }
-      else
-      {
-        result = await ResolveRestoreResultWithTimeoutAsync(request);
-      }
+      result = RestoreResult.Failed("purchase_delegate_not_configured");
+    }
+    else
+    {
+      result = await ResolveWithTimeoutAsync(
+        _purchaseController.OnRestoreAsync(request),
+        RestoreResult.Failed("restore_timeout"),
+        error => RestoreResult.Failed(error.Message)
+      );
+    }
 
-      await _bridge.CompleteRestoreAsync(request.RequestId, result, CancellationToken.None);
-    }
-    finally
-    {
-      _purchaseControllerLock.Release();
-    }
+    await _bridge.CompleteRestoreAsync(request.RequestId, result, CancellationToken.None);
   }
 
-  private async Task<PurchaseResult> ResolvePurchaseResultWithTimeoutAsync(PurchaseRequest request)
+  private static async Task<T> ResolveWithTimeoutAsync<T>(
+    Task<T> operation,
+    T timeoutValue,
+    Func<Exception, T> failureValue
+  )
   {
     try
     {
-      if (_purchaseController is null)
-      {
-        return PurchaseResult.Failed("purchase_delegate_not_configured");
-      }
-
-      using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Max(1, _purchaseTimeoutSeconds)));
-      var opTask = _purchaseController.OnPurchaseAsync(request);
-      var winner = await Task.WhenAny(opTask, WaitForTimeoutAsync(timeoutCts.Token));
-      if (winner == opTask)
-      {
-        return await opTask;
-      }
-
-      return PurchaseResult.Failed("purchase_timeout");
+      var winner = await Task.WhenAny(operation, Task.Delay(PurchaseTimeout));
+      return winner == operation ? await operation : timeoutValue;
     }
-    catch (Exception ex)
+    catch (Exception error)
     {
-      return PurchaseResult.Failed(ex.Message);
-    }
-  }
-
-  private async Task<RestoreResult> ResolveRestoreResultWithTimeoutAsync(RestoreRequest request)
-  {
-    try
-    {
-      if (_purchaseController is null)
-      {
-        return RestoreResult.Failed("purchase_delegate_not_configured");
-      }
-
-      using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Max(1, _restoreTimeoutSeconds)));
-      var opTask = _purchaseController.OnRestoreAsync(request);
-      var winner = await Task.WhenAny(opTask, WaitForTimeoutAsync(timeoutCts.Token));
-      if (winner == opTask)
-      {
-        return await opTask;
-      }
-
-      return RestoreResult.Failed("restore_timeout");
-    }
-    catch (Exception ex)
-    {
-      return RestoreResult.Failed(ex.Message);
-    }
-  }
-
-  private static async Task WaitForTimeoutAsync(CancellationToken cancellationToken)
-  {
-    try
-    {
-      await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-    }
-    catch (OperationCanceledException)
-    {
-      // Expected
+      return failureValue(error);
     }
   }
 

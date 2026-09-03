@@ -31,26 +31,23 @@ internal interface INuxieNativeBridge
   Task<string> GetAnonymousIdAsync(CancellationToken cancellationToken);
   Task<bool> GetIsIdentifiedAsync(CancellationToken cancellationToken);
 
-  Task StartTriggerAsync(
-    string requestId,
-    string eventName,
-    TriggerOptions? options,
+  void Trigger(string eventName, IReadOnlyDictionary<string, object?>? properties);
+  Task DismissAsync(CancellationToken cancellationToken);
+  Task SetLocaleIdentifierAsync(string? localeIdentifier, CancellationToken cancellationToken);
+
+  Task<FeatureAccess> HasFeatureAsync(
+    string featureId,
+    double requiredBalance,
+    string? entityId,
+    FeatureCheckPolicy policy,
     CancellationToken cancellationToken
   );
 
-  Task CancelTriggerAsync(string requestId, CancellationToken cancellationToken);
-  Task ShowFlowAsync(string flowId, CancellationToken cancellationToken);
-  Task<ProfileResponse> RefreshProfileAsync(CancellationToken cancellationToken);
-  Task<FeatureAccess> HasFeatureAsync(string featureId, int? requiredBalance, string? entityId, CancellationToken cancellationToken);
-  Task<FeatureAccess?> GetCachedFeatureAsync(string featureId, string? entityId, CancellationToken cancellationToken);
-  Task<FeatureCheckResult> CheckFeatureAsync(string featureId, int? requiredBalance, string? entityId, CancellationToken cancellationToken);
-  Task<FeatureCheckResult> RefreshFeatureAsync(string featureId, int? requiredBalance, string? entityId, CancellationToken cancellationToken);
-  Task UseFeatureAsync(
+  void UseFeature(
     string featureId,
     double amount,
     string? entityId,
-    IReadOnlyDictionary<string, object?>? metadata,
-    CancellationToken cancellationToken
+    IReadOnlyDictionary<string, object?>? metadata
   );
 
   Task<FeatureUsageResult> UseFeatureAndWaitAsync(
@@ -62,10 +59,6 @@ internal interface INuxieNativeBridge
     CancellationToken cancellationToken
   );
 
-  Task<bool> FlushEventsAsync(CancellationToken cancellationToken);
-  Task<int> GetQueuedEventCountAsync(CancellationToken cancellationToken);
-  Task PauseEventQueueAsync(CancellationToken cancellationToken);
-  Task ResumeEventQueueAsync(CancellationToken cancellationToken);
   Task CompletePurchaseAsync(string requestId, PurchaseResult result, CancellationToken cancellationToken);
   Task CompleteRestoreAsync(string requestId, RestoreResult result, CancellationToken cancellationToken);
 }

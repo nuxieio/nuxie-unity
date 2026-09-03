@@ -1,80 +1,36 @@
 # Nuxie Unity SDK
 
-Native-first Unity wrapper for Nuxie.
+Native-backed Unity access to Nuxie Journeys, Experiences, Features, App Actions, activity, and commerce.
 
-This package keeps Unity business logic thin and delegates runtime behavior to the native Nuxie SDKs:
-
-- iOS: `nuxie-ios`
-- Android: `nuxie-android`
-
-## Current Scope
-
-- Unified C# API for configure, identity, trigger flows, features, profile, queue controls, and purchase callbacks.
-- Native bridge transport for iOS (`DllImport("__Internal")`) and Android (`AndroidJavaClass`).
-- Typed trigger/feature/purchase/profile models aligned with the React Native and Flutter wrappers.
-- Contract tests (including trigger terminal fixtures and payload mapper tests).
+The C# facade delegates all runtime decisions to the Nuxie iOS and Android SDKs. Calling
+`Trigger` captures an event and returns immediately; any matching Journey continues
+asynchronously on device.
 
 ## Requirements
 
-- Unity `2022.3 LTS+`
-- iOS `15+` and Android `minSdk 21+` (inherited from native SDKs)
-- IL2CPP recommended for device builds
+- Unity 2022.3 LTS or newer
+- iOS 15 or newer
+- Android API 23 or newer
+- Nuxie iOS SDK 0.1.0
+- Nuxie Android SDK 0.1.0
 
 ## Install
 
-`Packages/manifest.json`:
+Add the package to `Packages/manifest.json`:
 
 ```json
 {
   "dependencies": {
-    "com.nuxie.unity": "https://github.com/nuxieai/nuxie-unity.git#main"
+    "com.nuxie.unity": "https://github.com/nuxieai/nuxie-unity.git#0.1.0"
   }
 }
 ```
 
-In the Nuxie monorepo, this package is consumed as a git submodule at `/Users/levi/dev/nuxie-dev-5/packages/nuxie-unity`.
+`Editor/NuxieDependencies.xml` pins both native SDKs to 0.1.0 through the
+[External Dependency Manager for Unity](https://github.com/googlesamples/unity-jar-resolver).
+Install that resolver before exporting a mobile player.
 
-## Native Dependency Setup
-
-The Unity bridge sources call into native Nuxie SDK classes. Your generated platform projects must include those native SDK dependencies.
-
-### iOS
-
-Add the `nuxie-ios` package/framework to the generated Xcode project so `import Nuxie` resolves for `Runtime/Plugins/iOS/NuxieUnityBridge.swift`.
-
-### Android
-
-Add the Android Nuxie SDK dependency to your Unity Gradle build so `io.nuxie.sdk.*` resolves for `Runtime/Plugins/Android/nuxie-unity-bridge.androidlib`.
-
-In Nuxie monorepo-based builds, this is typically a Gradle project dependency on `:nuxie-android`.
-
-## Native permission action setup
-
-Flow-authored native permission actions run inside the underlying iOS/Android
-SDKs, so no new Unity bridge API is required. Host platform projects still need
-the matching native declarations:
-
-- iOS:
-  - `NSUserTrackingUsageDescription` for `request_tracking`
-  - `NSCameraUsageDescription` for `request_permission("camera")`
-  - `NSMicrophoneUsageDescription` for `request_permission("microphone")`
-  - `NSPhotoLibraryUsageDescription` for `request_permission("photos")`
-  - `NSLocationWhenInUseUsageDescription` for
-    `request_permission("location")`
-- Android:
-  - `android.permission.POST_NOTIFICATIONS` for `request_notifications`
-  - `android.permission.CAMERA`
-  - `android.permission.RECORD_AUDIO`
-  - `android.permission.READ_MEDIA_IMAGES` on Android 13+ and
-    `android.permission.READ_EXTERNAL_STORAGE` on Android 12 and below
-  - `android.permission.ACCESS_COARSE_LOCATION` and/or
-    `android.permission.ACCESS_FINE_LOCATION`
-
-`request_tracking` is iOS-only. `request_notifications` uses the native Android
-notification permission path provided by `nuxie-android`, but Android 13+ apps
-still need `POST_NOTIFICATIONS` in the host manifest.
-
-## Quick Start
+## Configure and trigger
 
 ```csharp
 using System.Collections.Generic;
@@ -83,11 +39,9 @@ using UnityEngine;
 
 public sealed class NuxieBootstrap : MonoBehaviour
 {
-  [SerializeField] private string apiKey = "NX_REPLACE_ME";
-
   private async void Start()
   {
-    var sdk = await Nuxie.ConfigureAsync(new NuxieConfig(apiKey)
+    var sdk = await Nuxie.ConfigureAsync(new NuxieConfig("NX_REPLACE_ME")
     {
       Environment = NuxieEnvironment.Production,
       LogLevel = NuxieLogLevel.Info,
@@ -95,69 +49,57 @@ public sealed class NuxieBootstrap : MonoBehaviour
 
     await sdk.IdentifyAsync(
       "player_123",
-      userProperties: new Dictionary<string, object?>
-      {
-        ["plan"] = "free",
-        ["platform"] = "unity",
-      }
+      userProperties: new Dictionary<string, object?> { ["plan"] = "free" }
     );
 
-    var operation = sdk.Trigger("paywall_trigger");
-    operation.OnUpdate(update => Debug.Log($"Nuxie update: {update.Kind}"));
+    sdk.OnActivity += activity => Debug.Log(activity.Name);
+    sdk.OnAppAction += action => Debug.Log(action.Name);
 
-    var terminal = await operation.Done;
-    Debug.Log($"Nuxie trigger terminal: {terminal.Kind}");
+    sdk.Trigger(
+      "upgrade_tapped",
+      new Dictionary<string, object?> { ["screen"] = "settings" }
+    );
   }
 }
 ```
 
-## Purchase Controller
+`Trigger` has no result, handle, cancellation, or identity mutation. Use
+`OnActivity` for typed runtime telemetry and `OnAppAction` for actions delegated
+to the host app.
 
-Provide an `INuxiePurchaseController` to handle purchase/restore requests emitted by native paywall flows:
+## Features
 
 ```csharp
-using System.Threading.Tasks;
-using Nuxie.Unity;
+var access = await sdk.HasFeatureAsync(
+  "credits",
+  requiredBalance: 1.5,
+  entityId: "workspace_123",
+  policy: FeatureCheckPolicy.Remote
+);
 
-public sealed class GamePurchaseController : INuxiePurchaseController
-{
-  public Task<PurchaseResult> OnPurchaseAsync(PurchaseRequest request)
-  {
-    // Call your store SDK here.
-    return Task.FromResult(PurchaseResult.Failed("purchase_not_implemented"));
-  }
-
-  public Task<RestoreResult> OnRestoreAsync(RestoreRequest request)
-  {
-    return Task.FromResult(RestoreResult.NoPurchases());
-  }
-}
+sdk.UseFeature("credits", amount: 0.5);
+var usage = await sdk.UseFeatureAndWaitAsync("credits", amount: 1);
 ```
 
-Pass this controller to `ConfigureAsync`.
+Feature balances remain `double` values. Atomic usage returns
+`AuthoritativeAccess` when the native SDK has a current server result.
 
-## Repository Layout
+## Commerce
 
-- `Runtime/`: C# runtime API and models
-- `Runtime/Internal/`: bridge contract, event parsing, terminal rules
-- `Runtime/Plugins/iOS/`: Swift native bridge
-- `Runtime/Plugins/Android/`: Kotlin native bridge (`.androidlib`)
-- `Runtime/Unity/`: Unity host callback plumbing + coroutine helpers
-- `Documentation~/`: package docs
-- `Samples~/NuxieDemo`: integration sample
-- `dotnet/`: .NET contract test harness
+Implement `INuxiePurchaseController` and pass it to `ConfigureAsync` when the
+host app owns checkout. `PurchaseRequest` mirrors the canonical portable
+snake_case wire without receipt or transaction evidence invented by the wrapper.
 
-## Validation Commands
+## Validation
 
-- `cd dotnet && dotnet test Nuxie.Unity.slnx --nologo`
-- `swiftc -parse Runtime/Plugins/iOS/NuxieUnityBridge.swift`
+```bash
+cd dotnet
+dotnet test Nuxie.Unity.slnx --nologo
+```
 
-Android native compilation requires an Android SDK + Unity Gradle export environment.
+The repository also validates the Swift bridge against the real Nuxie framework
+with complete concurrency checking and compiles the Kotlin bridge against the real
+Android SDK with a host-only UnityPlayer stub.
 
-## Documentation
-
-- [`Documentation~/index.md`](Documentation~/index.md)
-- [`Documentation~/getting-started.md`](Documentation~/getting-started.md)
-- [`Documentation~/api-reference.md`](Documentation~/api-reference.md)
-- [`Documentation~/native-dependencies.md`](Documentation~/native-dependencies.md)
-- [`Documentation~/testing-and-validation.md`](Documentation~/testing-and-validation.md)
+See [the package documentation](Documentation~/index.md) and
+[the sample](Samples~/NuxieDemo/README.md).

@@ -1,0 +1,8 @@
+<dependencies>
+  <androidPackages>
+    <androidPackage spec="ai.nuxie:nuxie-android:0.1.0" />
+  </androidPackages>
+  <iosPods>
+    <iosPod name="Nuxie" version="0.1.0" minTargetSdk="15.0" />
+  </iosPods>
+</dependencies>
