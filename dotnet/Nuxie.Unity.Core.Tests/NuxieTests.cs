@@ -17,216 +17,179 @@ public sealed class NuxieTests : IDisposable
   [Fact]
   public async Task ConfigureAsync_RequiresApiKey()
   {
-    var exception = await Assert.ThrowsAsync<NuxieException>(() => Nuxie.ConfigureAsync(new NuxieConfig("")));
-    Assert.Equal("MISSING_API_KEY", exception.Code);
-  }
-
-  [Fact]
-  public async Task Trigger_CompletesOnlyOnTerminalUpdate()
-  {
-    var bridge = new FakeNativeBridge();
-    Nuxie.SetBridgeFactoryForTests(() => bridge);
-    var sdk = await Nuxie.ConfigureAsync(new NuxieConfig("NX_TEST"));
-
-    var operation = sdk.Trigger("premium_tapped");
-
-    Assert.Single(bridge.StartedTriggers);
-    var requestId = operation.RequestId;
-
-    bridge.EmitEnvelope(
-      NativeEventType.TriggerUpdate,
-      requestId,
-      new
-      {
-        update = new
-        {
-          kind = "decision",
-          decision = new
-          {
-            type = "flow_shown",
-            @ref = new { journeyId = "j1", campaignId = "c1", flowId = "f1" },
-          },
-        },
-      }
+    var error = await Assert.ThrowsAsync<NuxieException>(
+      () => Nuxie.ConfigureAsync(new NuxieConfig(""))
     );
-
-    await Task.Delay(30);
-    Assert.False(operation.Done.IsCompleted);
-
-    bridge.EmitEnvelope(
-      NativeEventType.TriggerUpdate,
-      requestId,
-      new
-      {
-        update = new
-        {
-          kind = "decision",
-          decision = new { type = "allowed_immediate" },
-        },
-      }
-    );
-
-    var terminal = await operation.Done.WaitWithTimeout(TimeSpan.FromSeconds(1));
-    Assert.Equal(TriggerUpdateKind.Decision, terminal.Kind);
-    Assert.Equal(TriggerDecisionType.AllowedImmediate, terminal.Decision?.Type);
+    Assert.Equal("MISSING_API_KEY", error.Code);
   }
 
   [Fact]
-  public async Task Trigger_CancelProducesDeterministicTerminalUpdate_WhenNativeCancelThrows()
-  {
-    var bridge = new FakeNativeBridge { CancelShouldThrow = true };
-    Nuxie.SetBridgeFactoryForTests(() => bridge);
-    var sdk = await Nuxie.ConfigureAsync(new NuxieConfig("NX_TEST"));
-
-    var operation = sdk.Trigger("premium_tapped");
-    await operation.CancelAsync();
-    var terminal = await operation.Done.WaitWithTimeout(TimeSpan.FromSeconds(1));
-
-    Assert.Equal(TriggerUpdateKind.Error, terminal.Kind);
-    Assert.Equal("trigger_cancelled", terminal.Error?.Code);
-  }
-
-  [Fact]
-  public async Task Trigger_EmitsStartFailureAsTerminalError()
-  {
-    var bridge = new FakeNativeBridge { StartTriggerException = new InvalidOperationException("boom") };
-    Nuxie.SetBridgeFactoryForTests(() => bridge);
-    var sdk = await Nuxie.ConfigureAsync(new NuxieConfig("NX_TEST"));
-
-    var operation = sdk.Trigger("premium_tapped");
-    var terminal = await operation.Done.WaitWithTimeout(TimeSpan.FromSeconds(1));
-
-    Assert.Equal(TriggerUpdateKind.Error, terminal.Kind);
-    Assert.Equal("trigger_start_failed", terminal.Error?.Code);
-  }
-
-  [Fact]
-  public async Task TriggerOnceAsync_ReturnsTimeoutTerminalAndCancelsNativeTrigger()
+  public async Task ConfigureAsync_ForwardsOnlyCompactCustomerOptions()
   {
     var bridge = new FakeNativeBridge();
     Nuxie.SetBridgeFactoryForTests(() => bridge);
-    var sdk = await Nuxie.ConfigureAsync(new NuxieConfig("NX_TEST"));
 
-    var terminal = await sdk.TriggerOnceAsync("slow_trigger", timeout: TimeSpan.FromMilliseconds(50));
-    Assert.Equal(TriggerUpdateKind.Error, terminal.Kind);
-    Assert.Equal("trigger_timeout", terminal.Error?.Code);
-    Assert.Equal(1, bridge.CancelTriggerCalls);
-  }
-
-  [Fact]
-  public async Task PurchaseRequest_CompletesUsingControllerResult()
-  {
-    var bridge = new FakeNativeBridge();
-    var controller = new TestPurchaseController
+    await Nuxie.ConfigureAsync(new NuxieConfig("NX_TEST")
     {
-      PurchaseResultFactory = _ => Task.FromResult(PurchaseResult.Success(productId: "sku.pro")),
-    };
+      Environment = NuxieEnvironment.Development,
+      LogLevel = NuxieLogLevel.Info,
+      RedactSensitiveData = true,
+      LocaleIdentifier = "fr-CA",
+      PurchaseHandlingMode = PurchaseHandlingMode.Observer,
+      TestStoreEnabled = true,
+    });
+
+    Assert.Equal(
+      new[] {
+        "environment",
+        "localeIdentifier",
+        "logLevel",
+        "purchaseHandlingMode",
+        "redactSensitiveData",
+        "testStoreEnabled",
+      },
+      bridge.ConfigurationOptions!.Keys.Order()
+    );
+  }
+
+  [Fact]
+  public async Task Trigger_IsEventOnlyAndFireAndForget()
+  {
+    var bridge = new FakeNativeBridge();
+    Nuxie.SetBridgeFactoryForTests(() => bridge);
+    var sdk = await Nuxie.ConfigureAsync(new NuxieConfig("NX_TEST"));
+    var properties = new Dictionary<string, object?> { ["screen"] = "upgrade" };
+
+    sdk.Trigger("upgrade_tapped", properties);
+
+    Assert.Equal("upgrade_tapped", bridge.TriggerCall?.EventName);
+    Assert.Same(properties, bridge.TriggerCall?.Properties);
+  }
+
+  [Fact]
+  public async Task ResetAsync_DefaultsToNewAnonymousIdentity()
+  {
+    var bridge = new FakeNativeBridge();
+    Nuxie.SetBridgeFactoryForTests(() => bridge);
+    var sdk = await Nuxie.ConfigureAsync(new NuxieConfig("NX_TEST"));
+
+    await sdk.ResetAsync();
+
+    Assert.False(bridge.LastResetKeepAnonymousId);
+  }
+
+  [Fact]
+  public async Task FeatureMethods_PreserveFractionsPolicyAndAuthoritativeAccess()
+  {
+    var bridge = new FakeNativeBridge();
+    Nuxie.SetBridgeFactoryForTests(() => bridge);
+    var sdk = await Nuxie.ConfigureAsync(new NuxieConfig("NX_TEST"));
+
+    var access = await sdk.HasFeatureAsync(
+      "credits",
+      requiredBalance: 1.5,
+      entityId: "workspace-1",
+      policy: FeatureCheckPolicy.Remote
+    );
+    sdk.UseFeature("credits", amount: 0.5, entityId: "workspace-1");
+    var usage = await sdk.UseFeatureAndWaitAsync("credits", amount: 1.25);
+
+    Assert.Equal(4.5, access.Balance);
+    Assert.Equal(1.5, bridge.FeatureCall?.RequiredBalance);
+    Assert.Equal(FeatureCheckPolicy.Remote, bridge.FeatureCall?.Policy);
+    Assert.Equal(0.5, bridge.UseFeatureCall?.Amount);
+    Assert.Equal(3.5, usage.AuthoritativeAccess?.Balance);
+  }
+
+  [Fact]
+  public async Task TypedJourneyEvents_AreForwardedWithoutTriggerState()
+  {
+    var bridge = new FakeNativeBridge();
+    Nuxie.SetBridgeFactoryForTests(() => bridge);
+    var sdk = await Nuxie.ConfigureAsync(new NuxieConfig("NX_TEST"));
+    NuxieActivityInfo? activity = null;
+    AppAction? action = null;
+    sdk.OnActivity += value => activity = value;
+    sdk.OnAppAction += value => action = value;
+
+    bridge.Emit(NativeEventType.Activity, new
+    {
+      schemaVersion = 1,
+      id = "activity-1",
+      timestampMs = 100L,
+      receivedAtMs = 110L,
+      name = "experience_shown",
+      properties = new { journey_id = "journey-1", count = 2 },
+    });
+    bridge.Emit(NativeEventType.AppAction, new
+    {
+      name = "open_settings",
+      payload = new { source = "journey" },
+      experience = new
+      {
+        experienceId = "experience-1",
+        experienceVersion = "v3",
+        journeyId = "journey-1",
+      },
+    });
+
+    Assert.Equal("experience_shown", activity?.Name);
+    Assert.Equal("journey-1", activity?.Properties["journey_id"]);
+    Assert.Equal("open_settings", action?.Name);
+    Assert.Equal("journey-1", action?.Experience.JourneyId);
+  }
+
+  [Fact]
+  public async Task PurchaseRequest_UsesCanonicalPortablePayload()
+  {
+    var bridge = new FakeNativeBridge();
+    var controller = new TestPurchaseController();
     Nuxie.SetBridgeFactoryForTests(() => bridge);
     var sdk = await Nuxie.ConfigureAsync(new NuxieConfig("NX_TEST"), controller);
+    PurchaseRequest? observed = null;
+    sdk.OnPurchaseRequest += request => observed = request;
 
-    bridge.EmitEnvelope(
-      NativeEventType.PurchaseRequest,
-      "purchase-1",
-      new
-      {
-        requestId = "purchase-1",
-        platform = "ios",
-        productId = "sku.pro",
-        timestampMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-      }
-    );
-
-    var completion = await bridge.PurchaseCompletions.Task.WaitWithTimeout(TimeSpan.FromSeconds(1));
-    Assert.Equal("purchase-1", completion.RequestId);
-    Assert.Equal(PurchaseResultType.Success, completion.Result.Type);
-    Assert.Equal("sku.pro", completion.Result.ProductId);
-  }
-
-  [Fact]
-  public async Task PurchaseRequest_WithoutController_MapsToDeterministicFailure()
-  {
-    var bridge = new FakeNativeBridge();
-    Nuxie.SetBridgeFactoryForTests(() => bridge);
-    var sdk = await Nuxie.ConfigureAsync(new NuxieConfig("NX_TEST"));
-
-    bridge.EmitEnvelope(
-      NativeEventType.PurchaseRequest,
-      "purchase-2",
-      new
-      {
-        requestId = "purchase-2",
-        platform = "android",
-        productId = "sku.basic",
-      }
-    );
-
-    var completion = await bridge.PurchaseCompletions.Task.WaitWithTimeout(TimeSpan.FromSeconds(1));
-    Assert.Equal(PurchaseResultType.Failed, completion.Result.Type);
-    Assert.Equal("purchase_delegate_not_configured", completion.Result.Message);
-  }
-
-  [Fact]
-  public async Task RestoreRequest_TimeoutReturnsRestoreTimeoutFailure()
-  {
-    var bridge = new FakeNativeBridge();
-    var controller = new TestPurchaseController
+    bridge.Emit(NativeEventType.PurchaseRequest, new Dictionary<string, object?>
     {
-      RestoreResultFactory = _ => new TaskCompletionSource<RestoreResult>(TaskCreationOptions.RunContinuationsAsynchronously).Task,
-    };
+      ["request_id"] = "purchase-1",
+      ["platform"] = "android",
+      ["product_id"] = "pro",
+      ["store_product_id"] = "pro.monthly",
+      ["base_plan_id"] = "monthly",
+      ["purchase_option_id"] = "trial",
+      ["offer_id"] = "launch",
+      ["placement_id"] = "upgrade",
+      ["display_name"] = "Pro",
+      ["display_price"] = "$9.99",
+      ["timestamp_ms"] = 123L,
+    });
 
-    Nuxie.SetBridgeFactoryForTests(() => bridge);
-    var sdk = await Nuxie.ConfigureAsync(
-      new NuxieConfig("NX_TEST")
-      {
-        RestoreRequestTimeoutSeconds = 1,
-      },
-      controller
-    );
-
-    bridge.EmitEnvelope(
-      NativeEventType.RestoreRequest,
-      "restore-1",
-      new
-      {
-        requestId = "restore-1",
-        platform = "ios",
-      }
-    );
-
-    var completion = await bridge.RestoreCompletions.Task.WaitWithTimeout(TimeSpan.FromSeconds(2));
-    Assert.Equal("restore-1", completion.RequestId);
-    Assert.Equal(RestoreResultType.Failed, completion.Result.Type);
-    Assert.Equal("restore_timeout", completion.Result.Message);
+    var completion = await bridge.PurchaseCompletions.Task.WaitAsync(TimeSpan.FromSeconds(1));
+    Assert.Equal("pro.monthly", observed?.StoreProductId);
+    Assert.Equal("trial", observed?.PurchaseOptionId);
+    Assert.Equal("purchase-1", completion.RequestId);
+    Assert.Equal(PurchaseResultType.Purchased, completion.Result.Type);
   }
 
   [Fact]
-  public async Task Shutdown_CancelsInFlightTriggerOperations()
+  public async Task Shutdown_RemovesConfiguredSingleton()
   {
     var bridge = new FakeNativeBridge();
     Nuxie.SetBridgeFactoryForTests(() => bridge);
     var sdk = await Nuxie.ConfigureAsync(new NuxieConfig("NX_TEST"));
 
-    var operation = sdk.Trigger("event_before_shutdown");
     await sdk.ShutdownAsync();
-    var terminal = await operation.Done.WaitWithTimeout(TimeSpan.FromSeconds(1));
 
-    Assert.Equal(TriggerUpdateKind.Error, terminal.Kind);
-    Assert.Equal("trigger_cancelled", terminal.Error?.Code);
+    Assert.Equal(1, bridge.ShutdownCalls);
+    Assert.Throws<NuxieException>(() => _ = Nuxie.Instance);
   }
 
   private sealed class TestPurchaseController : INuxiePurchaseController
   {
-    public Func<PurchaseRequest, Task<PurchaseResult>>? PurchaseResultFactory { get; init; }
-    public Func<RestoreRequest, Task<RestoreResult>>? RestoreResultFactory { get; init; }
+    public Task<PurchaseResult> OnPurchaseAsync(PurchaseRequest request) =>
+      Task.FromResult(PurchaseResult.Purchased());
 
-    public Task<PurchaseResult> OnPurchaseAsync(PurchaseRequest request)
-    {
-      return PurchaseResultFactory?.Invoke(request) ?? Task.FromResult(PurchaseResult.Success());
-    }
-
-    public Task<RestoreResult> OnRestoreAsync(RestoreRequest request)
-    {
-      return RestoreResultFactory?.Invoke(request) ?? Task.FromResult(RestoreResult.Success(1));
-    }
+    public Task<RestoreResult> OnRestoreAsync(RestoreRequest request) =>
+      Task.FromResult(RestoreResult.NoPurchases());
   }
 }

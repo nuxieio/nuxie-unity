@@ -1,32 +1,18 @@
-# Nuxie Demo Sample
+# Nuxie demo
 
-This sample includes `Scripts/NuxieDemoController.cs`, a minimal integration component that demonstrates:
+The sample controller demonstrates:
 
-- `Nuxie.ConfigureAsync(...)`
-- identity (`IdentifyAsync`)
-- trigger lifecycle (`Trigger`, `OnUpdate`, terminal `Done`)
-- flow presentation (`ShowFlowAsync`)
-- profile refresh (`RefreshProfileAsync`)
-- purchase/restore controller callbacks
+- configuration and identity
+- event-only Journey triggers
+- policy-aware Feature access
+- typed activity and App Actions
+- host-owned purchase and restore callbacks
+- Experience dismissal and shutdown
 
-## Scene Setup
+1. Import the package and resolve its native dependencies.
+2. Add `NuxieDemoController` to a GameObject.
+3. Set `apiKey`, `distinctId`, `triggerEventName`, and `featureId`.
+4. Run on an iOS or Android device.
 
-1. Import the sample from Unity Package Manager.
-2. Add an empty GameObject named `NuxieDemo`.
-3. Attach `NuxieDemoController`.
-4. Set `apiKey` (required), optional `distinctId`, `triggerEventName`, and `flowId`.
-5. Enter Play Mode.
-
-You can invoke sample actions from the component context menu:
-
-- Initialize Nuxie
-- Trigger Event
-- Show Flow
-- Refresh Profile
-- Shutdown Nuxie
-
-## Notes
-
-- This sample is intentionally simple and logs through `Debug.Log`.
-- Replace purchase/restore stubs with your real store implementation.
-- Ensure native dependencies are wired before device builds.
+The controller intentionally returns a failed purchase until the host app connects its
+store implementation.

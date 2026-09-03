@@ -1,48 +1,51 @@
-# Testing and Validation
+# Testing and validation
 
-## Contract Tests (.NET)
-
-Run from package root:
+## Managed contract
 
 ```bash
 cd dotnet
 dotnet test Nuxie.Unity.slnx --nologo
 ```
 
-Current suite validates:
+The test project compiles the real `Runtime/**/*.cs` sources and verifies:
 
-- Trigger terminal rule fixture parity.
-- Trigger lifecycle and cancellation behavior.
-- Purchase/restore request orchestration and timeout behavior.
-- Runtime shutdown cleanup behavior.
-- Native payload mapper parsing for profile/feature payloads.
+- compact configuration
+- event-only trigger behavior
+- reset defaults
+- fractional Feature access and atomic authoritative access
+- typed activity and App Action mapping
+- canonical commerce payloads
+- shutdown lifecycle
 
-## iOS Bridge Parse Check
+## iOS bridge
+
+Typecheck the bridge against a built Nuxie framework, not by itself:
 
 ```bash
-swiftc -parse Runtime/Plugins/iOS/NuxieUnityBridge.swift
+swiftc -typecheck \
+  -swift-version 6 \
+  -strict-concurrency=complete \
+  -target arm64-apple-ios15.0-simulator \
+  -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+  -F /path/to/DerivedData/Build/Products/Debug-iphonesimulator \
+  -I /path/to/DerivedData/Build/Products/Debug-iphonesimulator \
+  Runtime/Plugins/iOS/NuxieUnityBridge.swift
 ```
 
-This validates Swift bridge syntax and exported C entrypoints parse cleanly.
+## Android bridge
 
-## Android Build Validation
+Compile `NuxieUnityBridge.kt` against the real `nuxie-android` project. A host check
+may provide a minimal `com.unity3d.player.UnityPlayer` stub; all Nuxie symbols must
+come from the native SDK itself.
 
-Android bridge compilation requires Unity Android export tooling and Android SDK on the build machine.
+## Unity player smoke
 
-Validate by building an Android player after wiring `nuxie-android` dependency in Gradle.
+For each release, export one iOS and one Android development player and verify:
 
-## Recommended CI Matrix
-
-1. .NET contract tests (`dotnet test`).
-2. Swift parse check (`swiftc -parse`).
-3. Unity batchmode compile check (editor script compile).
-4. iOS and Android player build jobs.
-
-## Manual Smoke Checklist
-
-1. Configure with a valid API key.
-2. Identify user and verify distinct ID accessors.
-3. Trigger event and observe update stream + terminal completion.
-4. Request feature access and usage.
-5. Simulate purchase and restore callbacks.
-6. Call shutdown and verify pending trigger cancellation.
+1. setup and identity
+2. event capture and Journey-driven Experience presentation
+3. dismiss
+4. Feature read and use
+5. activity and App Action callbacks
+6. observer commerce completion
+7. shutdown and fresh setup

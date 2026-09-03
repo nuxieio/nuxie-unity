@@ -1,29 +1,13 @@
-# Nuxie Unity SDK Documentation
+# Nuxie Unity SDK documentation
 
-## What This Package Does
+`com.nuxie.unity` is a thin C# facade over the Nuxie iOS and Android SDKs.
+The native SDK owns Journey evaluation, Experience presentation, Feature authority,
+activity, App Actions, and commerce.
 
-`com.nuxie.unity` is a native-first Unity wrapper for Nuxie.
+- [Getting started](getting-started.md)
+- [API reference](api-reference.md)
+- [Native dependencies](native-dependencies.md)
+- [Testing and validation](testing-and-validation.md)
 
-The C# layer provides Unity-friendly APIs while iOS and Android behavior is executed by the native SDKs.
-
-## Document Map
-
-- [Getting Started](getting-started.md)
-- [API Reference](api-reference.md)
-- [Native Dependencies](native-dependencies.md)
-- [Testing and Validation](testing-and-validation.md)
-
-## Design Principles
-
-- Keep business logic in native SDKs (parity with iOS/Android references).
-- Keep Unity wrapper deterministic and thin.
-- Keep bridge contracts aligned with RN/Flutter wrappers.
-
-## Package Structure
-
-- `Runtime/` C# API and models
-- `Runtime/Internal/` bridge/event internals
-- `Runtime/Plugins/iOS/` Swift bridge exports (`NuxieUnity_Invoke`)
-- `Runtime/Plugins/Android/` Kotlin bridge object (`NuxieUnityBridge.invoke`)
-- `Runtime/Unity/` callback host and Unity helpers
-- `Samples~/NuxieDemo/` sample script and setup notes
+The wrapper intentionally exposes no direct Experience presentation, manual profile
+refresh, event delivery administration, trigger state machine, or native engine tuning.

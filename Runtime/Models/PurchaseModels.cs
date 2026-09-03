@@ -1,29 +1,31 @@
 namespace Nuxie.Unity;
 
+/// <summary>Portable checkout request. Native bridges encode these fields as snake_case.</summary>
 public sealed class PurchaseRequest
 {
-  public required string RequestId { get; init; }
-  public required string Platform { get; init; }
-  public required string ProductId { get; init; }
+  public string RequestId { get; init; } = "";
+  public string Platform { get; init; } = "";
+  public string ProductId { get; init; } = "";
+  public string StoreProductId { get; init; } = "";
   public string? BasePlanId { get; init; }
+  public string? PurchaseOptionId { get; init; }
   public string? OfferId { get; init; }
+  public string? PlacementId { get; init; }
   public string? DisplayName { get; init; }
   public string? DisplayPrice { get; init; }
-  public double? Price { get; init; }
-  public string? CurrencyCode { get; init; }
-  public required long TimestampMs { get; init; }
+  public long TimestampMs { get; init; }
 }
 
 public sealed class RestoreRequest
 {
-  public required string RequestId { get; init; }
-  public required string Platform { get; init; }
-  public required long TimestampMs { get; init; }
+  public string RequestId { get; init; } = "";
+  public string Platform { get; init; } = "";
+  public long TimestampMs { get; init; }
 }
 
 public enum PurchaseResultType
 {
-  Success,
+  Purchased,
   Cancelled,
   Pending,
   Failed,
@@ -31,79 +33,30 @@ public enum PurchaseResultType
 
 public sealed class PurchaseResult
 {
-  public required PurchaseResultType Type { get; init; }
+  public PurchaseResultType Type { get; init; }
   public string? Message { get; init; }
-  public string? ProductId { get; init; }
-  public string? PurchaseToken { get; init; }
-  public string? OrderId { get; init; }
-  public string? TransactionId { get; init; }
-  public string? OriginalTransactionId { get; init; }
-  public string? TransactionJws { get; init; }
 
-  public static PurchaseResult Success(
-    string? productId = null,
-    string? purchaseToken = null,
-    string? orderId = null,
-    string? transactionId = null,
-    string? originalTransactionId = null,
-    string? transactionJws = null
-  )
-  {
-    return new PurchaseResult
-    {
-      Type = PurchaseResultType.Success,
-      ProductId = productId,
-      PurchaseToken = purchaseToken,
-      OrderId = orderId,
-      TransactionId = transactionId,
-      OriginalTransactionId = originalTransactionId,
-      TransactionJws = transactionJws,
-    };
-  }
-
-  public static PurchaseResult Cancelled()
-  {
-    return new PurchaseResult { Type = PurchaseResultType.Cancelled };
-  }
-
-  public static PurchaseResult Pending()
-  {
-    return new PurchaseResult { Type = PurchaseResultType.Pending };
-  }
-
-  public static PurchaseResult Failed(string message)
-  {
-    return new PurchaseResult { Type = PurchaseResultType.Failed, Message = message };
-  }
+  public static PurchaseResult Purchased() => new() { Type = PurchaseResultType.Purchased };
+  public static PurchaseResult Cancelled() => new() { Type = PurchaseResultType.Cancelled };
+  public static PurchaseResult Pending() => new() { Type = PurchaseResultType.Pending };
+  public static PurchaseResult Failed(string message) => new() { Type = PurchaseResultType.Failed, Message = message };
 }
 
 public enum RestoreResultType
 {
-  Success,
+  Restored,
   NoPurchases,
   Failed,
 }
 
 public sealed class RestoreResult
 {
-  public required RestoreResultType Type { get; init; }
-  public int? RestoredCount { get; init; }
+  public RestoreResultType Type { get; init; }
   public string? Message { get; init; }
 
-  public static RestoreResult Success(int? restoredCount = null)
-  {
-    return new RestoreResult { Type = RestoreResultType.Success, RestoredCount = restoredCount };
-  }
-
-  public static RestoreResult NoPurchases()
-  {
-    return new RestoreResult { Type = RestoreResultType.NoPurchases };
-  }
-
-  public static RestoreResult Failed(string message)
-  {
-    return new RestoreResult { Type = RestoreResultType.Failed, Message = message };
-  }
+  public static RestoreResult Restored() => new() { Type = RestoreResultType.Restored };
+  public static RestoreResult NoPurchases() => new() { Type = RestoreResultType.NoPurchases };
+  public static RestoreResult Failed(string message) => new() { Type = RestoreResultType.Failed, Message = message };
 }
 
 public interface INuxiePurchaseController

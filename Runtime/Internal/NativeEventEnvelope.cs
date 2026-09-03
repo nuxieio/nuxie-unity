@@ -5,21 +5,19 @@ namespace Nuxie.Unity.Internal;
 
 internal enum NativeEventType
 {
-  TriggerUpdate,
   FeatureAccessChanged,
+  Activity,
+  AppAction,
   PurchaseRequest,
   RestoreRequest,
-  FlowPresented,
-  FlowDismissed,
   Unknown,
 }
 
 internal sealed class NativeEventEnvelope
 {
-  public required NativeEventType Type { get; init; }
-  public string? RequestId { get; init; }
-  public required long TimestampMs { get; init; }
-  public required JsonElement Payload { get; init; }
+  public NativeEventType Type { get; init; }
+  public long TimestampMs { get; init; }
+  public JsonElement Payload { get; init; }
 
   public static bool TryParse(string json, out NativeEventEnvelope? envelope, out string? error)
   {
@@ -45,22 +43,17 @@ internal sealed class NativeEventEnvelope
       var typeRaw = root.TryGetProperty("type", out var typeElement) ? typeElement.GetString() : null;
       var type = typeRaw switch
       {
-        "trigger_update" => NativeEventType.TriggerUpdate,
         "feature_access_changed" => NativeEventType.FeatureAccessChanged,
+        "activity" => NativeEventType.Activity,
+        "app_action" => NativeEventType.AppAction,
         "purchase_request" => NativeEventType.PurchaseRequest,
         "restore_request" => NativeEventType.RestoreRequest,
-        "flow_presented" => NativeEventType.FlowPresented,
-        "flow_dismissed" => NativeEventType.FlowDismissed,
         _ => NativeEventType.Unknown,
       };
 
-      var requestId = root.TryGetProperty("requestId", out var requestIdElement)
-        ? requestIdElement.GetString()
-        : null;
-
-      long timestampMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+      var timestampMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
       if (root.TryGetProperty("timestampMs", out var timestampElement) &&
-          timestampElement.ValueKind is JsonValueKind.Number &&
+          timestampElement.ValueKind == JsonValueKind.Number &&
           timestampElement.TryGetInt64(out var parsedTimestamp))
       {
         timestampMs = parsedTimestamp;
@@ -73,16 +66,14 @@ internal sealed class NativeEventEnvelope
       envelope = new NativeEventEnvelope
       {
         Type = type,
-        RequestId = requestId,
         TimestampMs = timestampMs,
         Payload = payload,
       };
-
       return true;
     }
-    catch (Exception ex)
+    catch (Exception exception)
     {
-      error = ex.Message;
+      error = exception.Message;
       return false;
     }
   }
